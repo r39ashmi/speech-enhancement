@@ -1,0 +1,8 @@
+data/
+code/.venv/
+results/cache/
+results/runs/
+results/log_*.txt
+results/ALLDONE
+__pycache__/
+*.docx
