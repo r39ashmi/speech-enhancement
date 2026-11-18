@@ -1,11 +1,13 @@
 import json, glob, os, numpy as np, pandas as pd
 import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
 R = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/results"
-ORDER = ["X-LIN", "X-C0.7", "X-C0.5", "R0", "R1", "R2", "R3", "R4", "R5", "R6"]
+ORDER = ["X-LIN", "X-C0.7", "X-C0.5", "R0", "R1", "R2", "R3", "R4", "R5", "R6", "A2", "A3", "A4"]
 DESC = {"X-LIN": "linear magnitude MSE", "X-C0.7": "compressed mag c=0.7", "X-C0.5": "compressed mag c=0.5",
         "R0": "compressed mag c=0.3", "R1": "R0 + compressed complex", "R2": "R1 + multi-res (5/10/20/40ms)",
         "R3": "R2 + over-suppression pen.", "R4": "R3 + loudness (A-wt) weighting", "R5": "R3 + SI-SNR",
-        "R6": "R3 + loudness + SI-SNR"}
+        "R6": "R3 + loudness + SI-SNR",
+        "A2": "R3 + diff. PESQ (w=0.1) [A1+PESQ low]", "A3": "R3 + diff. PESQ (w=1.0) [A1+PESQ high]",
+        "A4": "R3 + MetricGAN PESQ disc. (w=0.05)"}
 MET = ["PESQ", "PESQ_in", "STOI", "STOI_in", "SI-SDRi", "LE-LSD", "LE-LSD_in"]
 rows = []
 for f in sorted(glob.glob(R + "/runs/*.json")):
@@ -46,7 +48,19 @@ for l in ORDER:
             s = max(g.loc[(l, c), (m, "std")], g.loc[("R0", c), (m, "std")])
             cells.append(f"{d:+.2f}{' *' if abs(d) > 2 * s else ''}")
     md.append(f"| {l} | " + " | ".join(cells) + " |")
-md.append("\n`*` = exceeds 2× seed std.")
+md.append("\n## PESQ-loss arms (Section 4.8): difference vs. R3 (= A1, no PESQ term)\n")
+md.append("A0 = R1, A1 = R3. Hypotheses: H1 PESQ rises; H2 SI-SDRi and low-energy retention fall as PESQ weight rises.\n")
+md.append("| Arm | " + " | ".join(f"{c} ΔPESQ" for c in conds) + " | " + " | ".join(f"{c} ΔSI-SDRi" for c in conds) + " | " + " | ".join(f"{c} ΔLE-LSD" for c in conds) + " |\n|---|" + "---|" * (3 * len(conds)))
+for l in ["A2", "A3", "A4"]:
+    if l not in nseed.index: continue
+    cells = []
+    for m in ["PESQ", "SI-SDRi", "LE-LSD"]:
+        for c in conds:
+            d = g.loc[(l, c), (m, "mean")] - g.loc[("R3", c), (m, "mean")]
+            sd = max(g.loc[(l, c), (m, "std")], g.loc[("R3", c), (m, "std")])
+            cells.append(f"{d:+.2f}{' *' if abs(d) > 2 * sd else ''}")
+    md.append(f"| {l} | " + " | ".join(cells) + " |")
+md.append("\n`*` = exceeds 2x the larger seed std (rough screen, n=3).")
 open(R + "/RESULTS.md", "w").write("\n".join(md)); print("\n".join(md))
 
 fig, ax = plt.subplots(1, 4, figsize=(17, 4))

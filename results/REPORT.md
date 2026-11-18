@@ -26,11 +26,20 @@ Based on the loss-function ladder (Approach 6, §4.9) of *SE_Research_Report_Ras
 
 R0–R6 follow the report's Table 5. The X-* rows come from the report's Table 4 but were not run in the report. The report also ran each loss only once, which left run-to-run noise unmeasured. This study uses 3 seeds per loss.
 
+A second experiment covers the report's §4.8, **PESQ as a training loss**. The report cites work finding that PESQ-based losses mainly raise PESQ itself while lowering fidelity, and it leaves open whether this holds for a tiny model. Three arms were added on top of R3 (the best ladder loss, called A1 in the report; A0 is R1):
+
+| Arm | Loss | PESQ term |
+|---|---|---|
+| A2 | R3 + differentiable PESQ (`torch-pesq`) | weight 0.1 (low) |
+| A3 | R3 + differentiable PESQ | weight 1.0 (high) |
+| A4 | R3 + MetricGAN-style discriminator that learns real PESQ | weight 0.05 |
+
 The study asks four questions:
 1. Does each added term improve quality at low SNR, with reverb, and for weak speech?
 2. Which terms help and which don't?
 3. Are the differences larger than random run-to-run variation?
 4. Does optimising for waveform fidelity (SI-SNR) help or hurt?
+5. Does training directly on a PESQ term raise real PESQ, and at what cost to fidelity and weak speech?
 
 ---
 
@@ -90,7 +99,7 @@ ESC-50 noise is non-stationary (dog barks, door knocks, rain), which suits the r
 | Structure | 3 causal conv blocks (16 channels) → 1 GRU (48 units) → 3 transposed convs with skips → bounded complex mask |
 | Features | STFT with 20 ms window, 10 ms hop (161 bins), compressed complex spectrum as input |
 | Training | 1,200 steps, batch 12 × 3 s, Adam with one-cycle schedule |
-| Seeds | 3 per loss (30 runs in total) |
+| Seeds | 3 per loss (39 runs in total: 30 for the ladder, 9 for the PESQ arms) |
 | Compute | laptop CPU |
 
 Only the loss changes between runs. Architecture, data, schedule and seeds are identical.
@@ -121,6 +130,19 @@ Mean over 3 seeds ± seed std. Full tables are in `RESULTS.md`.
 
 (A full chart is in `loss_comparison.png`.)
 
+### 4b. PESQ as a training loss (§4.8)
+
+Evaluation uses the standard `pesq` package, not the differentiable surrogate used in training, so the PESQ gains below are real PESQ gains. Mean ± seed std at 5 dB dry (other conditions show the same pattern):
+
+| Arm | PESQ | STOI | SI-SDRi (dB) | Low-energy LSD (dB, lower is better) |
+|---|---|---|---|---|
+| A1 = R3 (no PESQ term) | 1.60 ± 0.02 | 0.855 ± 0.002 | +4.18 ± 0.08 | 9.63 ± 0.23 |
+| A2 (PESQ, low weight) | 2.32 ± 0.05 | 0.853 ± 0.001 | -6.05 ± 0.68 | 11.28 ± 0.08 |
+| A3 (PESQ, high weight) | **2.43 ± 0.07** | 0.837 ± 0.007 | -11.72 ± 0.24 | 16.79 ± 0.74 |
+| A4 (MetricGAN, 0.05) | 1.58 ± 0.01 | 0.851 ± 0.001 | +4.18 ± 0.14 | 9.43 ± 0.21 |
+
+PESQ at -5 dB: R3 1.45, A2 1.92, A3 1.97, A4 1.45. At 15 dB: R3 2.35, A2 3.15, A3 3.30, A4 2.31.
+
 ---
 
 ## 5. What we learned
@@ -141,6 +163,12 @@ Mean over 3 seeds ± seed std. Full tables are in `RESULTS.md`.
 
 8. **Run-to-run variance matters.** The magnitude-only losses and the SI-SNR variants have large seed variation. The report's single-seed design could not have told these cases apart, which supports running multiple seeds.
 
+9. **A direct PESQ term inflates PESQ and pays for it in fidelity (A2, A3).** PESQ rose by 0.5–1.0 over R3 in every condition, far beyond any other change in the study. But SI-SDR improvement fell from +4 dB to -6 dB (low weight) and -12 dB (high weight) at 5 dB SNR, and low-energy distortion worsened from 9.6 dB to 11.3 dB and 16.8 dB. STOI dropped at the high weight. The effect grows with the PESQ weight, which is the dose-response the report predicted. This supports H1 (PESQ rises) and H2 (SI-SDR and low-energy retention fall as the weight rises). The big PESQ gain alongside a large SI-SDR loss means the model learned to produce outputs that PESQ rates highly but that are far from the clean waveform. That is a sign of exploiting the metric, not of better speech.
+
+10. **The MetricGAN discriminator had no measurable effect (A4).** At weight 0.05 it matched R3 on every metric within seed noise. This does not show that MetricGAN losses are harmless. The discriminator was small, trained on only 4 examples per step for 1,200 steps, and weighted weakly, so it may simply not have learned a useful signal.
+
+11. **Decision rule from §4.8.** A PESQ term is adopted only if it wins a listening test, or improves at least two non-PESQ metrics on the mismatched set with an SI-SDR loss under 1 dB. Neither A2 nor A3 comes close (SI-SDR loss of 10–16 dB, and weaker low-energy retention), and A4 changes nothing. So **A1 (R3) stays the final loss**, based on the objective metrics.
+
 ---
 
 ## 6. Limitations and caveats
@@ -150,8 +178,10 @@ Mean over 3 seeds ± seed std. Full tables are in `RESULTS.md`.
 - **Small, partly reused test set:** 60 utterances per condition, from about half the held-out speakers, with the same clean utterances in every condition.
 - **Synthetic reverb and a non-standard dataset:** conclusions may not transfer to real rooms or to VoiceBank+DEMAND and DNS data.
 - **Choices I made without guidance from the report:** loss weights (0.3/0.7 for magnitude and complex, 1:1 for the extra terms, 0.01 for SI-SNR), the A-weighting proxy, and the model's exact layers. Different choices could shift the results.
-- **PESQ-based losses not tested.** The §4.8 PESQ-loss arms (A2–A4) need a differentiable PESQ implementation that isn't available here.
-- **No listening test.** All conclusions rest on objective metrics, which the report itself warns can diverge from listener preference.
+- **PESQ-loss arms are only partly tested.** H1 and H2 were tested. H3 (the PESQ gain shrinks or reverses on mismatched data) was not, because there is no EARS-WHAM or similar set here. My test speakers and noise clips are unseen, but they come from the same corpora. H4 (listeners do not prefer the PESQ arms) needs a listening test, which was not run.
+- **The PESQ weights (0.1 and 1.0) were my choice.** The report does not give them, and the low-weight arm already shows a large fidelity cost, so a still lower weight might behave differently. The surrogate (`torch-pesq`) also produced NaN gradients on some utterances, which I zeroed.
+- **A4 is a light implementation of MetricGAN.** See finding 10.
+- **No listening test.** All conclusions rest on objective metrics, which the report itself warns can diverge from listener preference. The fidelity drop in A2 and A3 is a reason to doubt that the higher PESQ reflects better listening quality, but only a listening test can settle it.
 
 ---
 
@@ -161,14 +191,15 @@ Mean over 3 seeds ± seed std. Full tables are in `RESULTS.md`.
 2. Tune the SI-SNR weight (for example 0.001–0.05) before concluding it hurts.
 3. Rerun on VoiceBank+DEMAND to allow comparison with published results.
 4. Add more seeds and a paired significance test.
-5. Add the PESQ-loss arms from §4.8.
+5. Test the PESQ-loss arms on a mismatched set (for example EARS-WHAM) for H3, and run a listening test for H4.
+6. Try smaller PESQ weights (for example 0.01) and a stronger MetricGAN discriminator, to see whether any PESQ term helps without the fidelity loss.
 
 ---
 
 ## Files
 
 - `code/selib.py`: data, model, losses and metrics
-- `code/run_one.py`, `code/run_all.sh`: training and evaluation
+- `code/run_one.py`, `code/run_all.sh`, `code/run_pesq.sh`: training and evaluation (ladder sweep and PESQ-loss arms)
 - `code/analyze.py`: builds the tables and chart
 - `results/RESULTS.md`: full result tables
 - `results/loss_comparison.png`: chart
